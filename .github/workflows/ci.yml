@@ -5,7 +5,6 @@ on:
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
 # One run per branch or PR: a newer push cancels the older run.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -13,9 +12,28 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  # Docs-only pull requests skip the tests. A skipped job still passes the required check (branch protection, D205,
+  # 2026-11-15). If this job fails, the tests run anyway, so a broken gate can't let a merge through.
+  changes:
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          files=$(git diff --name-only "$BASE" HEAD)
+          if grep -qvE '\.md$|^docs/|^LICENSE$' <<<"$files"; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
   test:
     # Draft PRs don't run CI.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && needs.changes.outputs.code != 'false')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
