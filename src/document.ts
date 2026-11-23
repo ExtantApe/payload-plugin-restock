@@ -73,7 +73,7 @@ export async function purchaseOrderDocument(payload: Payload, orderID: ID, optio
   const supplier = (await payload.findByID({ collection: o.suppliers as CollectionSlug, id: idOf(order.supplier)!, ...sys, joins: false, disableErrors: true, req })) as Doc | null
   const scope = o.scopeField ? idOf(order[o.scopeField]) : null
   const settings = (
-    await payload.find({ collection: o.settings as CollectionSlug, where: o.scopeField ? { [o.scopeField]: { equals: scope } } : {}, limit: 1, ...sys, joins: false, req })
+    await payload.find({ pagination: false, collection: o.settings as CollectionSlug, where: o.scopeField ? { [o.scopeField]: { equals: scope } } : {}, limit: 1, ...sys, joins: false, req })
   ).docs[0] as Doc | undefined
   const lines: PurchaseOrderDocument['lines'] = []
   for (const l of (order.lines ?? []) as Doc[]) {

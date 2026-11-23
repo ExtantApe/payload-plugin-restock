@@ -419,7 +419,7 @@ export function ordersCollection(o: ResolvedRestock): CollectionConfig {
 
 /** PO-0001, PO-0002… per site, after the highest so far. A unique index catches two drafts made at the same moment. */
 async function nextNumber(req: PayloadRequest, o: ResolvedRestock, scope: unknown): Promise<string> {
-  const last = (await req.payload.find({ collection: o.orders as CollectionSlug, where: o.scopeField ? { [o.scopeField]: { equals: idOf(scope) } } : {}, sort: '-number', limit: 1, ...sys, req }))
+  const last = (await req.payload.find({ pagination: false, collection: o.orders as CollectionSlug, where: o.scopeField ? { [o.scopeField]: { equals: idOf(scope) } } : {}, sort: '-number', limit: 1, ...sys, req }))
     .docs[0] as Doc | undefined
   const n = Number(String(last?.number ?? 'PO-0').replace(/^PO-/, '')) || 0
   return `PO-${String(n + 1).padStart(4, '0')}`
