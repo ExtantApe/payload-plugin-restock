@@ -11,6 +11,7 @@ type Doc = Record<string, any> // eslint-disable-line @typescript-eslint/no-expl
 
 let payload: Payload
 const mail: { to: string[]; subject: string }[] = []
+let emailOn: unknown = true
 const tracked: string[] = []
 let mongo: MongoMemoryReplSet
 const tenantField: Field = { name: 'tenant', type: 'relationship', relationTo: 'tenants', required: true }
@@ -42,7 +43,7 @@ beforeAll(async () => {
               return { trackerId: `trk_${shipment.trackingNumber}` }
             },
           },
-          notify: { recipients: ['receiving@example.com'], sendEmail: async ({ to, subject }) => void mail.push({ to, subject }) },
+          notify: { recipients: ['receiving@example.com'], canSend: () => emailOn as boolean, sendEmail: async ({ to, subject }) => void mail.push({ to, subject }) },
         }),
       ],
     }),
@@ -151,6 +152,22 @@ describe('arrived, please confirm', () => {
     return { lab, box, reagent, boxItem, reagentItem, make }
   }
   const tn = () => `1Z${Math.random().toString(36).slice(2, 10).toUpperCase()}`
+
+  it('sends the arrival email only when canSend answers exactly true', async () => {
+    const { boxItem, make } = await placed()
+    try {
+      for (const answer of ['yes', 1, {}, [], 'false']) {
+        const po = await make([{ item: boxItem.id, packs: 1 }])
+        const number = tn()
+        await payload.update({ collection: 'purchase-orders' as never, id: po.id, data: { shipments: [{ carrier: 'UPS', trackingNumber: number }] } as never, user: { id: 'x', collection: 'users' } as never })
+        emailOn = answer
+        expect(await markDelivered(payload, { trackerId: `trk_${number}`, scope: site.id })).toMatchObject({ status: 'delivered' })
+        expect(mail.filter((m) => m.subject === `Arrived, please confirm: ${po.number}`)).toHaveLength(0)
+      }
+    } finally {
+      emailOn = true
+    }
+  })
 
   it('tracks shipments, and a delivered event lists the order but never adds stock, once', async () => {
     const { box, boxItem, make } = await placed()
