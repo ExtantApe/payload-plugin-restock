@@ -52,7 +52,7 @@ export type RestockPluginOptions = {
   /** "Arrived, please confirm" emails to staff (optional), once per delivered shipment. */
   notify?: {
     recipients?: string[] | ((args: { payload: Payload; scope: ID | null }) => string[] | Promise<string[]>)
-    /** May email go out from here right now? Default: always. */
+    /** May email go out from here right now? Only an exact `true` sends. Default: always. */
     canSend?: (args: { payload: Payload }) => boolean | Promise<boolean>
     sendEmail?: (args: { payload: Payload; to: string[]; subject: string; text: string; html: string }) => Promise<void>
   }

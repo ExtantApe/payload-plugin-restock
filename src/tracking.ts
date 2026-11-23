@@ -83,7 +83,7 @@ export async function awaitingConfirmation(payload: Payload, options: { user?: u
 async function notifyArrived(payload: Payload, orderID: ID) {
   const o = restockOf(payload)
   if (!o.notify) return
-  if (o.notify.canSend && !(await o.notify.canSend({ payload }))) return
+  if (o.notify.canSend && (await o.notify.canSend({ payload })) !== true) return
   const order = (await payload.findByID({ collection: o.orders as CollectionSlug, id: orderID, ...sys, depth: 1, joins: false, disableErrors: true })) as Doc | null
   if (!order) return
   const fresh = ((order.shipments ?? []) as Doc[]).filter((sh) => sh.status === 'delivered' && !sh.notifiedAt)
