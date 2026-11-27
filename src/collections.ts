@@ -1,4 +1,6 @@
-import type { CollectionAfterChangeHook, CollectionBeforeChangeHook, CollectionBeforeDeleteHook, CollectionConfig, CollectionSlug, Field, PayloadRequest } from 'payload'
+import type { CollectionAfterChangeHook, CollectionBeforeChangeHook, CollectionBeforeDeleteHook, CollectionConfig, CollectionSlug, Field, PayloadRequest, Where } from 'payload'
+
+import { strict } from './access.js'
 
 import type { ResolvedRestock } from './types.js'
 import { allows, asInternal, idOf, INTERNAL, num, RestockError, round, sameID, sys, userID, type Doc } from './util.js'
@@ -54,12 +56,59 @@ export const orderingFields = (): Field[] => [
   },
 ]
 
+/** Request-context key: the query a person's `manage` access answered with, per collection, for the write check below. */
+const WRITE_SCOPE = 'restockWriteScope'
+
+/**
+ * Restock's collections read the host's access strictly. Payload lets a create or update through on any query
+ * answer, so the query is kept for `writeInScope`, which checks the saved document against it.
+ */
+function strictAccess(o: ResolvedRestock, slug: string): NonNullable<CollectionConfig['access']> {
+  const write = async (args: { req: PayloadRequest }) => {
+    const answer = await strict(() => o.manage)(args)
+    args.req.context ??= {}
+    const kept = (args.req.context[WRITE_SCOPE] ??= {}) as Record<string, Where>
+    if (answer === true || answer === false) delete kept[slug]
+    else kept[slug] = answer
+    return answer
+  }
+  return { read: strict(() => o.read), create: write as never, update: write as never, delete: strict(() => o.manage) }
+}
+
+/**
+ * After a create or update made under a query answer, the saved document must match that query, or the write is
+ * undone: thrown inside the request's transaction, or reverted by hand when there is none. Fails closed.
+ */
+function writeInScope(slug: string): CollectionAfterChangeHook {
+  return async ({ doc, previousDoc, operation, req }) => {
+    const where = (req.context?.[WRITE_SCOPE] as Record<string, Where> | undefined)?.[slug]
+    if (!where) return doc
+    let found = 0
+    try {
+      found = (await req.payload.count({ collection: slug as CollectionSlug, where: { and: [{ id: { equals: doc.id } }, where] }, overrideAccess: true, req })).totalDocs
+    } catch {
+      found = 0
+    }
+    if (found > 0) return doc
+    if (!req.transactionID) {
+      try {
+        if (operation === 'create') await req.payload.db.deleteOne({ collection: slug as CollectionSlug, where: { id: { equals: doc.id } }, req })
+        else await req.payload.db.updateOne({ collection: slug as CollectionSlug, id: doc.id, data: previousDoc, req })
+      } catch (error) {
+        req.payload.logger.error({ err: error, msg: `restock: couldn’t undo an out-of-scope ${operation} on ${slug} ${String(doc.id)}` })
+      }
+    }
+    throw new RestockError('scope', operation === 'create' ? 'You can’t add this here.' : 'You can’t make this change here.', 403)
+  }
+}
+
 export function suppliersCollection(o: ResolvedRestock): CollectionConfig {
   return {
     slug: o.suppliers,
     labels: { singular: 'Supplier', plural: 'Suppliers' },
     admin: { group: o.adminGroup, useAsTitle: 'name', defaultColumns: ['name', 'orderMethod', 'email', 'leadTimeDays'] },
-    access: { read: o.read, create: o.manage, update: o.manage, delete: o.manage },
+    access: strictAccess(o, o.suppliers),
+    hooks: { afterChange: [writeInScope(o.suppliers)] },
     fields: [
       { name: 'name', type: 'text', required: true, label: 'Name' },
       {
@@ -107,7 +156,7 @@ export function itemsCollection(o: ResolvedRestock, kittingItems: string | null)
       defaultColumns: ['title', 'supplier', 'packSize', 'price', 'priceSeenOn'],
       description: 'What you buy from each supplier: their item or model number, pack, minimum and price.',
     },
-    access: { read: o.read, create: o.manage, update: o.manage, delete: o.manage },
+    access: strictAccess(o, o.items),
     hooks: {
       beforeChange: [
         beforeChange,
@@ -116,6 +165,7 @@ export function itemsCollection(o: ResolvedRestock, kittingItems: string | null)
           return data
         },
       ],
+      afterChange: [writeInScope(o.items)],
     },
     fields: [
       { name: 'title', type: 'text', admin: { hidden: true } },
@@ -280,8 +330,8 @@ export function ordersCollection(o: ResolvedRestock): CollectionConfig {
       description: 'What to buy from one supplier. Restock drafts them; a person checks, approves and places the order. Nothing is ever bought for you.',
     },
     defaultSort: '-updatedAt',
-    access: { read: o.read, create: o.manage, update: o.manage, delete: o.manage },
-    hooks: { beforeChange: [beforeChange], afterChange: [afterChange], beforeDelete: [beforeDelete] },
+    access: strictAccess(o, o.orders),
+    hooks: { beforeChange: [beforeChange], afterChange: [writeInScope(o.orders), afterChange], beforeDelete: [beforeDelete] },
     indexes: [{ fields: o.scopeField ? ['number', o.scopeField] : ['number'], unique: true }],
     fields: [
       { name: 'number', type: 'text', label: 'Order number', admin: { readOnly: true, position: 'sidebar' } },
@@ -465,8 +515,8 @@ export function settingsCollection(o: ResolvedRestock): CollectionConfig {
     slug: o.settings,
     labels: { singular: 'Restock settings', plural: 'Restock settings' },
     admin: { group: o.adminGroup, useAsTitle: 'organizationName', description: 'Who is buying: printed on every purchase order.' },
-    access: { read: o.read, create: o.manage, update: o.manage, delete: o.manage },
-    hooks: { beforeChange: [beforeChange] },
+    access: strictAccess(o, o.settings),
+    hooks: { beforeChange: [beforeChange], afterChange: [writeInScope(o.settings)] },
     fields: [
       { name: 'organizationName', type: 'text', required: true, label: 'Organization name', admin: { description: 'As it should appear at the top of a purchase order.' } },
       address('shipTo', 'Ship to'),

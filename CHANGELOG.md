@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Restock's collections read access strictly.** Suppliers, supplier items, purchase orders and settings now grant only when `read` or `manage` answers exactly `true` or a well-formed query. A truthy answer such as `1` or `'yes'`, a malformed query, or a throw is a no, as it already was for the endpoints.
+- **Writes stay on the person's own site.** When `manage` answers with a query, a create or update must still match it once saved. If it doesn't (a record added for another site, or one moved there), the write is refused with a 403 and nothing is kept.
+- **A query that would match every row counts as no query.** That covers an `undefined` value, `not_in: []`, and an empty `like` or `contains`.
+- **The drafting site check reads `manage` strictly**, like the other checks.
+- **The Console's cart list decides who may place orders before it reads anything**, so people who may not get the same 403 whether or not the site has approved orders.
+
+Tested: 32 tests (5 new, each failing on the code before this change) and the build. Not tested: a real host's access functions, Postgres or SQLite, and a real site. Kitting's own suppliers collection keeps Kitting's access rules and isn't covered by these checks.
+
 ## 0.1.3 (2026-11-26)
 
 - **`notify.canSend` must answer exactly `true` to send.** A truthy answer such as `'yes'` or `1` used to send the arrival email; now it counts as email off.

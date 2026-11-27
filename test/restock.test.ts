@@ -4,6 +4,7 @@ import { buildConfig, getPayload, type Access, type CollectionConfig, type Field
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { awaitingConfirmation, draftOrders, orderOutputs, restockPlugin } from '../src/index.js'
+import { trueOrWhere } from '../src/access.js'
 import { allows } from '../src/util.js'
 
 // Made-up suppliers, items, sites and people throughout. No real account numbers or prices.
@@ -426,5 +427,68 @@ describe('only an exact true, or a query that matches (test audit 2026-11-11)', 
     } finally {
       o.read = read
     }
+  })
+})
+
+describe('collection access read strictly, and every write kept in scope (2026-11-26)', () => {
+  const opts = () => payload.config.custom!.restock as { read: unknown; manage: unknown }
+
+  it('refuses reads and writes on a truthy non-true or malformed answer', async () => {
+    const { supplier } = await supplierWithItems(siteB)
+    const o = opts()
+    const { read, manage } = o
+    try {
+      for (const loose of [() => 1, () => 'yes', () => ({ tenant: false }), () => ({})]) {
+        o.read = loose
+        o.manage = loose
+        await expect(payload.find({ collection: 'purchase-orders' as never, ...as(staffA) }), String(loose)).rejects.toThrow()
+        await expect(payload.findByID({ collection: 'suppliers' as never, id: supplier.id, ...as(staffA) })).rejects.toThrow()
+        await expect(create('suppliers', { tenant: siteB.id, name: 'Loose answer supplier' }, as(staffA))).rejects.toThrow()
+        await expect(update('suppliers', supplier.id, { name: 'Renamed by a loose answer' }, as(staffA))).rejects.toThrow()
+      }
+    } finally {
+      o.read = read
+      o.manage = manage
+    }
+    expect((await get('suppliers', supplier.id)).name).toBe('Example Packaging Co')
+    expect((await payload.find({ collection: 'suppliers' as never, where: { name: { equals: 'Loose answer supplier' } }, depth: 0 })).totalDocs).toBe(0)
+  })
+
+  it('keeps a query answer’s writes on the person’s own site, on create and update, and saves nothing else', async () => {
+    const own = await supplierWithItems(siteA)
+    const other = await supplierWithItems(siteB)
+    const count = async (collection: string, where: Doc) => (await payload.count({ collection: collection as never, where })).totalDocs
+
+    await expect(create('suppliers', { tenant: siteB.id, name: 'Planted supplier' }, as(staffA))).rejects.toThrow()
+    expect(await count('suppliers', { name: { equals: 'Planted supplier' } })).toBe(0)
+    await expect(create('supplier-items', { tenant: siteB.id, supplier: other.supplier.id, sku: 'P-1', name: 'Planted item' }, as(staffA))).rejects.toThrow()
+    expect(await count('supplier-items', { sku: { equals: 'P-1' } })).toBe(0)
+    await expect(create('restock-settings', { tenant: siteB.id, organizationName: 'Planted settings' }, as(staffA))).rejects.toThrow()
+    expect(await count('restock-settings', { organizationName: { equals: 'Planted settings' } })).toBe(0)
+
+    // Moving one of their own records to another site is refused and leaves it where it was.
+    await expect(update('suppliers', own.supplier.id, { tenant: siteB.id }, as(staffA))).rejects.toThrow()
+    expect(String((await get('suppliers', own.supplier.id)).tenant)).toBe(String(siteA.id))
+
+    // Their own site still works.
+    const mine = await create('suppliers', { tenant: siteA.id, name: 'Own site supplier' }, as(staffA))
+    expect(String(mine.tenant)).toBe(String(siteA.id))
+    expect((await update('suppliers', mine.id, { name: 'Own site supplier, renamed' }, as(staffA))).name).toBe('Own site supplier, renamed')
+  })
+
+  it('treats a query whose condition would match every row as no query', async () => {
+    for (const where of [{ tenant: { not_equals: undefined } }, { tenant: { not_in: [] } }, { name: { like: '' } }, { name: { contains: '' } }, { or: [{ tenant: { not_in: [] } }] }])
+      expect(await trueOrWhere(() => where), JSON.stringify(where)).toBe(false)
+    expect(await trueOrWhere(() => ({ tenant: { in: [] } }))).toEqual({ tenant: { in: [] } })
+    expect(await trueOrWhere(() => ({ tenant: { equals: null } }))).toEqual({ tenant: { equals: null } })
+  })
+
+  it('answers the cart list the same way for people who may not place orders on a site, whether or not it has orders', async () => {
+    const siteC = await create('tenants', { name: 'Site C, nothing in it' })
+    const list = payload.config.endpoints.find((e) => e.path === '/restock/cart/orders')!
+    const get_ = (user: Doc, scope: unknown) => list.handler({ payload, user: { ...user, collection: 'users' }, searchParams: new URLSearchParams({ scope: String(scope) }) } as never) as Promise<Response>
+    expect((await get_(buyerA, siteC.id)).status).toBe(403)
+    expect((await get_(staffB, siteC.id)).status).toBe(403)
+    expect((await get_(staffB, siteA.id)).status).toBe(403)
   })
 })

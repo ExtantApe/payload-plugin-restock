@@ -176,3 +176,12 @@ Suite: 26 tests before, 26 after (`npx vitest run`), 1 extended. For Kitting's a
 - **Tests.** In `kitting.test.ts`, "tracks shipments…": the shared `arrived` returns the delivered order with its id, number, supplier, delivery time and its site's ID (not the populated site document).
 - **Mutation checks.** 2 mutations, each a Python string replace restored byte for byte (SHA-256 checked). Both fail the suite: `scope` left out of `arrived`, and the populated site document returned instead of its ID.
 - **Skipped.** `scope: null` without a `scopeField`: every database suite here runs with a site field, and the `null` branch is the same line `awaitingConfirmation` has used since 0.1. Kitting's side, the filtering, is tested in Kitting.
+
+## 2026-11-26, strict collection access and writes kept in scope
+
+Suite: 28 tests before, 32 after (`npx vitest run`). From the payload security review of PR #4.
+
+- **The change.** `src/collections.ts`: every Restock collection's `read`, `create`, `update` and `delete` goes through `strict` (`trueOrWhere`), so only `true` or a well-formed query grants. When `manage` answers with a query on create or update, an `afterChange` hook counts the saved document against it; no match throws a 403, which rolls the write back inside a transaction, and without one the hook deletes the new document or restores the previous one first. `src/access.ts`: `isWhere` refuses operators whose value would match every row. `src/endpoints.ts`: the cart list checks `approve` for the site before reading orders, so its answer no longer depends on whether orders exist.
+- **Tests.** In `restock.test.ts`, "collection access read strictly…": loose answers (`1`, `'yes'`, `{ tenant: false }`, `{}`) refuse reads, creates and updates, and nothing changes; a site-A person's supplier, item and settings for site B are refused and not saved, moving their own supplier to site B is refused and it stays put, and their own site still works; `trueOrWhere` refuses the match-everything queries and keeps `in: []` and `equals: null`; the cart list answers 403 to a buyer at an empty site and to another site's staff at sites with and without orders.
+- **Fail-first.** With the `src` changes reverted, all 4 new tests fail; with them back, the suite passes.
+- **Skipped.** The revert path without a transaction runs only where the adapter has none; the suite uses a replica set, so the rollback path is the one exercised. Kitting's own suppliers collection is Kitting's to test; the README states the limit.
