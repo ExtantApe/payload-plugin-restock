@@ -1,4 +1,5 @@
-import type { CollectionSlug, Endpoint, PayloadRequest, Where } from 'payload'
+import type { CollectionSlug, Endpoint, PayloadRequest } from 'payload'
+import { trueOrWhere } from './access.js'
 
 import { ordersForCart, recordCart } from './console.js'
 import { purchaseOrderCSV, purchaseOrderDocument } from './document.js'
@@ -15,16 +16,21 @@ const bodyOf = async (req: PayloadRequest): Promise<Body> => (typeof req.json ==
 
 /**
  * May this person manage Restock on this site? Their `manage` access must allow it outright, or
- * match at least one of the site's suppliers. Fails closed.
+ * match at least one of the site's suppliers. Fails closed: only exactly `true` or a well-formed query counts, and
+ * any other answer, a throw, or a query Payload can't run here is a no.
  */
 export async function mayManageSite(req: PayloadRequest, scope: ID | null): Promise<boolean> {
   const o = restockOf(req.payload)
   if (!req.user || req.user.collection !== o.userSlug) return false
-  const access = await o.manage({ req } as never)
+  const access = await trueOrWhere(() => o.manage({ req } as never))
   if (access === true) return true
-  if (!access || !o.scopeField || scope === null) return false
-  const found = await req.payload.count({ collection: o.suppliers as CollectionSlug, where: { and: [{ [o.scopeField]: { equals: scope } }, access as Where] }, overrideAccess: true, req })
-  return found.totalDocs > 0
+  if (access === false || !o.scopeField || scope === null) return false
+  try {
+    const found = await req.payload.count({ collection: o.suppliers as CollectionSlug, where: { and: [{ [o.scopeField]: { equals: scope } }, access] }, overrideAccess: true, req })
+    return found.totalDocs > 0
+  } catch {
+    return false
+  }
 }
 
 const fail = (req: PayloadRequest, error: unknown) => {

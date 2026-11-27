@@ -173,6 +173,41 @@ describe('drafting over HTTP', () => {
     expect((await call(staffA, undefined)).status).toBe(400)
     expect((await call(staffA, siteA.id)).status).toBe(200)
   })
+
+  it('refuses another site unless manage answers exactly true or a query matching that site, and never 500s', async () => {
+    await supplierWithItems(siteA)
+    await supplierWithItems(siteB)
+    const endpoint = payload.config.endpoints.find((e) => e.path === '/restock/draft')!
+    const call = (scope: unknown) => endpoint.handler({ payload, user: { ...staffA, collection: 'users' }, json: async () => ({ scope }) } as never) as Promise<Response>
+    const o = payload.config.custom!.restock as { manage: unknown }
+    const manage = o.manage
+    const NOT_TRUE: [string, () => unknown][] = [
+      ['1', () => 1],
+      ["'yes'", () => 'yes'],
+      ['an empty object', () => ({})],
+      ['a malformed query', () => ({ tenant: false })],
+      ['an unrunnable query', () => ({ notAField: { equals: 1 } })],
+      ['a thrown error', () => {
+        throw new Error('roles store down')
+      }],
+      ['a rejected promise', async () => {
+        throw new Error('roles store down')
+      }],
+    ]
+    try {
+      for (const [what, answer] of NOT_TRUE) {
+        o.manage = answer
+        expect((await call(siteB.id)).status, what).toBe(403)
+      }
+      o.manage = () => ({ tenant: { equals: siteA.id } })
+      expect((await call(siteB.id)).status, 'a query for site A, drafting for B').toBe(403)
+      expect((await call(siteA.id)).status, 'a query for site A, drafting for A').toBe(200)
+      o.manage = () => true
+      expect((await call(siteB.id)).status).toBe(200)
+    } finally {
+      o.manage = manage
+    }
+  })
 })
 
 describe('ways to place an order', () => {
