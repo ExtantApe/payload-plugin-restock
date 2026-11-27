@@ -1,4 +1,5 @@
-import type { CollectionSlug, Endpoint, PayloadRequest, Where } from 'payload'
+import type { Access, CollectionSlug, Endpoint, PayloadRequest } from 'payload'
+import { trueOrWhere } from './access.js'
 
 import { ordersForCart, recordCart } from './console.js'
 import { purchaseOrderCSV, purchaseOrderDocument } from './document.js'
@@ -15,16 +16,24 @@ const bodyOf = async (req: PayloadRequest): Promise<Body> => (typeof req.json ==
 
 /**
  * May this person manage Restock on this site? Their `manage` access must allow it outright, or
- * match at least one of the site's suppliers. Fails closed.
+ * match at least one of the site's suppliers. Fails closed: only exactly `true` or a well-formed query counts, and
+ * any other answer, a throw, or a query Payload can't run here is a no.
  */
-export async function mayManageSite(req: PayloadRequest, scope: ID | null): Promise<boolean> {
+export const mayManageSite = (req: PayloadRequest, scope: ID | null) => mayOnSite(req, restockOf(req.payload).manage, scope)
+
+/** The same check for any of Restock's access functions (`approve` for the Console's cart). */
+export async function mayOnSite(req: PayloadRequest, check: Access, scope: ID | null): Promise<boolean> {
   const o = restockOf(req.payload)
   if (!req.user || req.user.collection !== o.userSlug) return false
-  const access = await o.manage({ req } as never)
+  const access = await trueOrWhere(() => check({ req } as never))
   if (access === true) return true
-  if (!access || !o.scopeField || scope === null) return false
-  const found = await req.payload.count({ collection: o.suppliers as CollectionSlug, where: { and: [{ [o.scopeField]: { equals: scope } }, access as Where] }, overrideAccess: true, req })
-  return found.totalDocs > 0
+  if (access === false || !o.scopeField || scope === null) return false
+  try {
+    const found = await req.payload.count({ collection: o.suppliers as CollectionSlug, where: { and: [{ [o.scopeField]: { equals: scope } }, access] }, overrideAccess: true, req })
+    return found.totalDocs > 0
+  } catch {
+    return false
+  }
 }
 
 const fail = (req: PayloadRequest, error: unknown) => {
@@ -78,7 +87,8 @@ export const restockEndpoints: Endpoint[] = [
     },
   },
   {
-    // For the Console: approved orders on a site. People who may approve (place) orders only.
+    // For the Console: approved orders on a site. People who may approve (place) orders only. Whether they may is
+    // settled before anything is read, so the answer never depends on whether the site has orders.
     path: '/restock/cart/orders',
     method: 'get',
     handler: async (req) => {
@@ -86,11 +96,12 @@ export const restockEndpoints: Endpoint[] = [
       if (!req.user || req.user.collection !== o.userSlug) return json({ message: 'Sign in first.' }, 401)
       const scope = o.scopeField ? ((req.searchParams.get('scope') as ID | null) ?? null) : null
       if (o.scopeField && scope === null) return json({ message: `Say which ${o.scopeField}.` }, 400)
+      const access = await trueOrWhere(() => o.approve({ req } as never))
+      if (access === false || (access !== true && o.scopeField && !(await mayOnSite(req, o.approve, scope)))) return json({ message: 'You can’t place orders here.' }, 403)
       try {
         const orders = await ordersForCart(req.payload, { scope, req: { user: req.user, payload: req.payload } as PayloadRequest })
         const allowed = []
         for (const order of orders) if (await allows(req, o.approve, o.orders, order.id)) allowed.push(order)
-        if (orders.length && !allowed.length) return json({ message: 'You can’t place orders here.' }, 403)
         return json({ orders: allowed })
       } catch (error) {
         return fail(req, error)
