@@ -2,6 +2,45 @@
 
 Each audit maps what Restock promises (README, `docs/decisions.md`) to the tests that prove it.
 
+## 2026-11-26: sweep after the transaction fix
+
+Suite: 27 tests before, 34 after (`npm test`). Two new files, both with a made-up Payload and no database. Since the 2026-11-11 entries: the transaction fix (`bec7a21`) and the exact-`true` rule for `notify.canSend` (`bf00766`), both released in 0.1.3. This entry is at the top; the older ones below run oldest first.
+
+- **Promises.**
+  - Finds that can run inside a request's transaction pass `pagination: false`, and any limit still applies (CHANGELOG 0.1.3).
+  - The arrival email goes out only when `canSend` answers exactly `true`, once per delivered parcel (CHANGELOG 0.1.3, README "Shipments and arrivals").
+  - Access: `read`, `manage` and `approve` count only as exactly `true` or a query applied to the order; endpoints answer 403 and the admin page reads nothing (README "Access").
+  - Site isolation, the order life cycle, whole packs, and nothing approved or ordered by Restock (README, `docs/decisions.md`).
+  - Receiving: more than ordered is refused, a refused receipt writes nothing, and lots are never made up (README "Receiving").
+  - A delivery never adds stock; the same event twice changes nothing; another site's tracker is refused (README "Safety").
+  - Exports: one document feeds the JSON, CSV and PDF; CSV formula cells are defused; only http and https links (README "Placing an order").
+  - The cart API changes only its own status (`docs/decisions.md`, Tier 2).
+  - Each works alone: Kitting is an optional peer behind a guarded import (`docs/decisions.md`).
+  - The try-out app runs only on its throwaway database (README "Commands").
+- **Covered.**
+  - No paginated finds with a `req`: `transactions.test.ts`: "numbering a new order reads the highest number so far without a count, and still asks for one row"; "building the purchase-order document reads the site’s settings without a count, and still asks for one row"; "the other finds made with a req don’t paginate either: settings, drafting, deliveries, arrivals and the cart list".
+  - `canSend` exactly `true`: `kitting.test.ts`: "sends the arrival email only when canSend answers exactly true" (truthy answers, real database); `notify.test.ts`: all four tests.
+  - One email per parcel, a delivery never adds stock, idempotent events, another site's tracker: `kitting.test.ts`: "tracks shipments, and a delivered event lists the order but never adds stock, once".
+  - Access answers read strictly: `restock.test.ts`: "refuses a truthy non-true answer, a malformed or unrunnable query, and a throw; applies a query; never 500s" (`allows` and the export endpoint); `view.test.ts`: "reads orders only when read answers true or a well-formed query, and suppliers only when manage does".
+  - Who may do what, with refusals: `restock.test.ts`: "moves draft → approved → ordered by hand, refuses the rest, and freezes lines after the draft"; "keeps each site’s suppliers and orders to itself, and lets viewers only read"; "drafts only for people who manage that site"; "records what arrived, for people who manage that site only"; "lists approved orders and records the cart, for people who may place orders, and changes nothing else"; "shows arrivals and the confirm actions only to people who may receive".
+  - Site isolation and whole packs: `restock.test.ts`: "refuses lines from another supplier or site, and packs that aren’t whole"; `kitting-0.1.test.ts`: "drafts from Kitting’s below-level list, for this site only, in whole packs".
+  - Receiving: `kitting.test.ts`: "adds stock (with lots) through Kitting, refuses more than ordered, and moves the order on"; "asks for lot and use-by on lot-tracked supplies, and records missing items as a partial receipt".
+  - Exports and outputs: `restock.test.ts`: "builds every export from one document, with the site’s own buyer details, for people who may read the order"; "gives quick-order lines, an email draft and product links"; `pure.test.ts`: "quotes commas, quotes and line breaks, and defuses cells a spreadsheet would run"; "runs onto more pages on Letter, numbering each one, with every line in the text".
+  - Each works alone: `pure.test.ts`: "depends on no other package from this set; Kitting is an optional peer, reached only by a guarded dynamic import"; `restock.test.ts`: "drafts from the host’s own needs, at least the minimum, one draft per supplier".
+  - The try-out app's database guard: `tryout.test.ts`: both tests.
+- **Gaps added.**
+  - **The transaction fix had no test** (3 tests, `test/transactions.test.ts`). A made-up Payload records what `find` is asked. The first two tests drive the two paths `bec7a21` changed: the orders `beforeChange` hook on create (`nextNumber`) and `purchaseOrderDocument` (the settings read). Each asserts the find made with a `req` passes `pagination: false` and still asks for `limit: 1`. The third drives the other seven finds made with a `req` (the settings clash check, three in drafting, two in `tracking.ts`, the cart list), which already skipped the count through `list` or by hand, so a later edit can't bring the race back unnoticed. Each check also counts the finds, so it can't pass by making none.
+  - **Fail first.** With `src/collections.ts` and `src/document.ts` restored from `bec7a21^`, `npx vitest run test/transactions.test.ts` gave 2 failed and 1 passed: "find on purchase-orders: expected undefined to be false" and "find on restock-settings: expected undefined to be false". With the fix back: 3 passed.
+  - **The arrival email's other refusals** (4 tests, `test/notify.test.ts`). The existing test covered truthy answers. Added: `true` (plain and async) and no `canSend` send once, and a repeated event sends nothing more; `false`, `0`, `''`, `null` and `undefined` send nothing; a `canSend` that throws or rejects sends nothing, the delivery is still recorded and the error is logged; blank recipients send nothing; a delivery inside a caller's transaction sends nothing, because that transaction could still roll back.
+  - **Mutation checks** on `src/tracking.ts`, each a Python string replace restored with `git checkout` (SHA-256 checked). All 4 fail `notify.test.ts`: `!== true` made `=== false`; the `.catch` on the email removed; the caller's-transaction condition removed; the no-recipients return removed.
+- **Gaps skipped (and why).**
+  - **The race itself.** `NoSuchTransaction` came up about 1 time in 7 in another plugin and isn't reproduced here. A test that only fails sometimes proves little; the tests pin the argument that removes the race.
+  - **Payload honoring `pagination: false`** (no count query sent): framework internals.
+  - **The two finds in the admin view** (`RestockView`): they take no `req`, run outside any transaction and already pass `pagination: false`. Their access decision is covered in `view.test.ts`.
+  - **`mayManageSite`, the draft endpoint's site check, with answers other than `true` or a query:** not covered here. A test belongs with a change to that function, so it has gone to the lead.
+  - **Email wording and HTML escaping:** the subject and recipients are asserted; the body is presentation.
+  - **Never stores vendor credentials, tags, license and release files:** as in the 2026-11-10 entries, review questions with nothing to run.
+
 ## 2026-11-09, day one (step 1: data model)
 
 4 tests, against an in-memory MongoDB replica set.
